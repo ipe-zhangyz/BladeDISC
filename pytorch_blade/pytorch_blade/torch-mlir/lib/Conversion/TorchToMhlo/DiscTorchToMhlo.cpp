@@ -189,24 +189,10 @@ class ConvertAtenExtractOp : public OpConversionPattern<AtenOpT> {
     auto elemTy = inpTy.getElementType();
 
     if (outTy != elemTy) {
-      auto output =
-          rewriter.create<tensor::ExtractOp>(op.getLoc(), elemTy, input);
-
-      bool toWider =
-          outTy.getIntOrFloatBitWidth() > elemTy.getIntOrFloatBitWidth();
-      if (elemTy.isIntOrIndex()) {
-        if (toWider) {
-          rewriter.replaceOpWithNewOp<arith::ExtSIOp>(op, outTy, output);
-        } else {
-          rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, outTy, output);
-        }
-      } else {
-        if (toWider) {
-          rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, outTy, output);
-        } else {
-          rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, outTy, output);
-        }
-      }
+      // outTy and elemTy may be diffrent datatypes like int to float
+      Value conveted = rewriter.create<mhlo::ConvertOp>(
+          op.getLoc(), RankedTensorType::get(inpTy.getShape(), outTy), input);
+      rewriter.replaceOpWithNewOp<tensor::ExtractOp>(op, outTy, conveted);
     } else {
       rewriter.replaceOpWithNewOp<tensor::ExtractOp>(op, outTy, input);
     }

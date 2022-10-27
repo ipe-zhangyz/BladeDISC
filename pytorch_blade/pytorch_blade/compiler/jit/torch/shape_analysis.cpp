@@ -43,7 +43,6 @@
 #include <vector>
 
 #include "op_registry.h"
-
 namespace c10 {
 inline std::vector<size_t> irange(size_t start, size_t end) {
   std::vector<size_t> range(end - start);
@@ -946,9 +945,6 @@ class ShapePropagator : public PropertyPropBase {
             "aten::neg(Tensor self) -> Tensor",
             "aten::t(Tensor self) -> Tensor",
             "aten::sigmoid(Tensor self) -> Tensor",
-#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION > 6
-            "aten::logit(Tensor self, float? eps=None) -> Tensor",
-#endif
             "aten::tanh(Tensor self) -> Tensor",
             "aten::asin(Tensor self) -> Tensor",
             "aten::atan(Tensor self) -> Tensor",
@@ -992,19 +988,10 @@ class ShapePropagator : public PropertyPropBase {
             "aten::normal(float mean, Tensor std, *, Generator? generator) -> Tensor",
             "aten::normal(Tensor mean, float std, *, Generator? generator) -> Tensor",
             "aten::permute(Tensor self, int[] dims) -> Tensor",
-#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION >= 12
-            "aten::pin_memory(Tensor(a) self, Device? device=None) -> Tensor(a)",
-            "aten::gelu(Tensor self, *, str approximate='none') -> Tensor",
-            "aten::gelu_backward(Tensor grad_output, Tensor self, *, str approximate='none') -> Tensor",
-#endif
             "aten::pinverse(Tensor self, float rcond) -> Tensor",
             "aten::reciprocal(Tensor self) -> Tensor",
             "aten::relu(Tensor self) -> Tensor",
             "aten::relu_(Tensor self) -> Tensor",
-#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION >= 9
-            "aten::relu6(Tensor self) -> Tensor",
-            "aten::relu6_(Tensor self) -> Tensor",
-#endif
             "aten::round(Tensor self) -> Tensor",
             "aten::rrelu(Tensor self, Scalar lower, Scalar upper, bool training, Generator? generator) -> Tensor",
             "aten::rsqrt(Tensor self) -> Tensor",
@@ -1027,6 +1014,20 @@ class ShapePropagator : public PropertyPropBase {
             "aten::narrow(Tensor self, int dim, int start, int length) -> Tensor",
             "aten::alias(Tensor self) -> Tensor",
             "aten::zero_(Tensor self) -> Tensor",
+#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION > 6
+            "aten::logit(Tensor self, float? eps=None) -> Tensor",
+            "aten::silu(Tensor self) -> Tensor",
+            "aten::silu_(Tensor self) -> Tensor",
+#endif
+#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION >= 9
+            "aten::relu6(Tensor self) -> Tensor",
+            "aten::relu6_(Tensor self) -> Tensor",
+#endif
+#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION >= 12
+            "aten::pin_memory(Tensor(a) self, Device? device=None) -> Tensor(a)",
+            "aten::gelu(Tensor self, *, str approximate='none') -> Tensor",
+            "aten::gelu_backward(Tensor grad_output, Tensor self, *, str approximate='none') -> Tensor",
+#endif
         },
         [](Node* node) -> type_vec_t {
           auto input_type = node->input(0)->type()->cast<TensorType>();
@@ -1081,6 +1082,8 @@ class ShapePropagator : public PropertyPropBase {
             "aten::mul_(Tensor self, Tensor other) -> Tensor",
             "aten::div(Tensor self, Tensor other) -> Tensor",
             "aten::div_(Tensor self, Tensor other) -> Tensor",
+            "aten::div(Tensor self, Tensor other, *, str? rounding_mode) -> Tensor",
+            "aten::div_(Tensor self, Tensor other, *, str? rounding_mode) -> Tensor",
             "aten::floor_divide(Tensor self, Tensor other) -> Tensor",
             "aten::floor_divide_.Tensor(Tensor(a!) self, Tensor other) -> Tensor(a!)",
         },
@@ -1332,6 +1335,39 @@ class ShapePropagator : public PropertyPropBase {
             auto ret = type;
             if (maybe_dtype_option && !maybe_dtype_option->isNone()) {
               return {ret->withScalarType(maybe_dtype_option->toScalarType())};
+            } else {
+              return {ret};
+            }
+          }
+          return {};
+        }};
+
+    // Requirements:
+    //   dims           : preserved
+    //   scalar type    : preserved
+    //   device         : Device
+    //   tensor inputs  : 1
+    //   tensor outputs : 1
+    // Additionally:
+    //   - First input should be the only tensor input
+    static const register_formula_for aten_to_device{
+        {"aten::to.device(Tensor self, Device device, ScalarType dtype, bool non_blocking=False, bool copy=False, MemoryFormat? memory_format=None) -> Tensor"},
+        [](Node* node) -> type_vec_t {
+          at::optional<IValue> maybe_device_option = node->get(attr::device);
+          if (auto type = node->input(0)->type()->cast<TensorType>()) {
+            auto ret = type;
+            if (maybe_device_option && !maybe_device_option->isNone()) {
+              auto device = maybe_device_option->toDevice();
+#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION >= 10
+              return {ret->withDevice(device)};
+#else
+              return {TensorType::create(
+                  ret->scalarType(),
+                  device,
+                  ret->dim(),
+                  /*requires_grad=*/c10::nullopt)};
+#endif
+
             } else {
               return {ret};
             }
@@ -2228,7 +2264,9 @@ class ShapePropagator : public PropertyPropBase {
           node->matches(
               "aten::reshape(Tensor(a) self, int[] shape) -> Tensor(a)")) {
         auto type = tensor_types.at(0);
-        if (type && type->symbolic_sizes().isComplete()) {
+        // shape may be not static
+        if (type && type->symbolic_sizes().isComplete() &&
+            node->get<c10::List<int64_t>>(attr::shape)) {
           auto shape = node->get<c10::List<int64_t>>(attr::shape).value();
           std::vector<int64_t> new_sizes(shape.begin(), shape.end());
           return type->withSizes(new_sizes);
@@ -2266,6 +2304,13 @@ class ShapePropagator : public PropertyPropBase {
               "aten::diagonal(Tensor self, int offset, int dim1, int dim2) -> Tensor")) {
         auto& t = tensor_types.at(0);
         return t->dim() && *t->dim() > 0 ? t->withDim(*t->dim() - 1) : nullptr;
+      } else if (
+          node->matches(
+              "aten::convolution(Tensor input, Tensor weight, Tensor? bias, int[] stride, int[] padding, int[] dilation, bool transposed, int[] output_padding, int groups) -> Tensor") ||
+          node->matches(
+              "aten::_convolution(Tensor input, Tensor weight, Tensor? bias, int[] stride, int[] padding, int[] dilation, bool transposed, int[] output_padding, int groups, bool benchmark, bool deterministic, bool cudnn_enabled, bool allow_tf32) -> Tensor")) {
+        auto& t = tensor_types.at(0);
+        return t->withDim(*t->dim());
       } else if (
           node->matches(
               "aten::linear(Tensor input, Tensor weight, Tensor? bias=None) -> Tensor")) {
