@@ -1082,8 +1082,10 @@ class ShapePropagator : public PropertyPropBase {
             "aten::mul_(Tensor self, Tensor other) -> Tensor",
             "aten::div(Tensor self, Tensor other) -> Tensor",
             "aten::div_(Tensor self, Tensor other) -> Tensor",
+#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION > 10
             "aten::div(Tensor self, Tensor other, *, str? rounding_mode) -> Tensor",
             "aten::div_(Tensor self, Tensor other, *, str? rounding_mode) -> Tensor",
+#endif
             "aten::floor_divide(Tensor self, Tensor other) -> Tensor",
             "aten::floor_divide_.Tensor(Tensor(a!) self, Tensor other) -> Tensor(a!)",
         },
@@ -1358,7 +1360,7 @@ class ShapePropagator : public PropertyPropBase {
             auto ret = type;
             if (maybe_device_option && !maybe_device_option->isNone()) {
               auto device = maybe_device_option->toDevice();
-#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION >= 10
+#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION > 10
               return {ret->withDevice(device)};
 #else
               return {TensorType::create(
