@@ -2307,15 +2307,14 @@ class ShapePropagator : public PropertyPropBase {
         auto& t = tensor_types.at(0);
         return t->dim() && *t->dim() > 0 ? t->withDim(*t->dim() - 1) : nullptr;
       } else if (
+#if PYTORCH_MAJOR_VERSION == 1 && PYTORCH_MINOR_VERSION > 6
+          node->matches(
+              "aten::_convolution(Tensor input, Tensor weight, Tensor? bias, int[] stride, int[] padding, int[] dilation, bool transposed, int[] output_padding, int groups, bool benchmark, bool deterministic, bool cudnn_enabled, bool allow_tf32) -> Tensor") ||
+#endif
           node->matches(
               "aten::convolution(Tensor input, Tensor weight, Tensor? bias, int[] stride, int[] padding, int[] dilation, bool transposed, int[] output_padding, int groups) -> Tensor") ||
           node->matches(
-                  "aten::_convolution(Tensor input, Tensor weight, Tensor? bias, int[] stride, int[] padding, int[] dilation, bool transposed, int[] output_padding, int groups, bool benchmark, bool deterministic, bool cudnn_enabled) -> Tensor")
-
-              node->matches(
-                  "aten::_convolution(Tensor input, Tensor weight, Tensor? bias, int[] stride, int[] padding, int[] dilation, bool transposed, int[] output_padding, int groups, bool benchmark, bool deterministic, bool cudnn_enabled, bool allow_tf32) -> Tensor")
-
-      ) {
+              "aten::_convolution(Tensor input, Tensor weight, Tensor? bias, int[] stride, int[] padding, int[] dilation, bool transposed, int[] output_padding, int groups, bool benchmark, bool deterministic, bool cudnn_enabled) -> Tensor")) {
         auto& t = tensor_types.at(0);
         return t->withDim(*t->dim());
       } else if (
